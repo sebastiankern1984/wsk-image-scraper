@@ -3,13 +3,10 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
-ARG VITE_API_URL
-ENV VITE_API_URL=${VITE_API_URL}
+# No VITE_API_URL needed - nginx proxies /api to backend
 RUN npm run build
 
-FROM node:20-slim
-WORKDIR /app
-RUN npm install -g serve
-COPY --from=builder /app/dist ./dist
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 4173
-CMD ["serve", "-s", "dist", "-l", "4173"]

@@ -95,13 +95,24 @@ async def get_all_products_with_image_status(
             GROUP BY product_id
         """), {"ids": product_ids})
         counts = {str(r["product_id"]): dict(r) for r in image_counts.mappings()}
+
+        # Get first thumbnail per product for the gallery grid
+        thumb_result = await own_session.execute(text("""
+            SELECT DISTINCT ON (product_id) product_id::text, id
+            FROM product_images
+            WHERE product_id::text = ANY(:ids)
+            ORDER BY product_id, status ASC, id ASC
+        """), {"ids": product_ids})
+        thumbnails = {str(r["product_id"]): r["id"] for r in thumb_result.mappings()}
     else:
         counts = {}
+        thumbnails = {}
 
     items = []
     for p in products:
         pid = str(p["product_id"])
         c = counts.get(pid, {"total": 0, "pending": 0, "accepted": 0, "rejected": 0})
+        thumb_id = thumbnails.get(pid)
         item = {
             "product_id": pid,
             "name": p["name"],
@@ -113,6 +124,7 @@ async def get_all_products_with_image_status(
             "pending_count": c.get("pending", 0),
             "accepted_count": c.get("accepted", 0),
             "rejected_count": c.get("rejected", 0),
+            "thumbnail_url": f"/api/images/{thumb_id}/thumbnail" if thumb_id else None,
         }
 
         # Apply filter

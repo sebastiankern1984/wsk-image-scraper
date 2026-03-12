@@ -37,6 +37,7 @@ async def get_product_images(product_id: str, db: AsyncSession = Depends(get_db)
     return [
         {
             "id": img.id,
+            "image_id": str(img.id),
             "product_id": img.product_id,
             "ean": img.ean,
             "pzn": img.pzn,
@@ -47,6 +48,8 @@ async def get_product_images(product_id: str, db: AsyncSession = Depends(get_db)
             "height": img.height,
             "file_size_kb": img.file_size_kb,
             "status": img.status,
+            "thumbnail_url": f"/api/images/{img.id}/thumbnail",
+            "file_url": f"/api/images/{img.id}/file",
             "created_at": img.created_at.isoformat() if img.created_at else None,
             "curated_at": img.curated_at.isoformat() if img.curated_at else None,
         }
