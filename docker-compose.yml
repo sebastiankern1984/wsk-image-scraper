@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: imgscraper-db
+    environment:
+      POSTGRES_USER: imgscraper
+      POSTGRES_PASSWORD: imgscraper
+      POSTGRES_DB: imgscraper
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5437:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U imgscraper"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: imgscraper-backend
+    restart: unless-stopped
+    ports:
+      - "3097:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://imgscraper:imgscraper@db:5432/imgscraper
+      DATABASE_URL_SYNC: postgresql+psycopg2://imgscraper:imgscraper@db:5432/imgscraper
+      WSKHUB_DATABASE_URL: postgresql+asyncpg://wskhub:wskhub@host.docker.internal:5436/wskhub
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_CX: ${GOOGLE_CX:-}
+      BING_API_KEY: ${BING_API_KEY:-}
+      IMAGE_STORAGE_PATH: /data/images
+      CORS_ORIGINS: '["http://localhost:3098","http://localhost:5173"]'
+    volumes:
+      - imagedata:/data/images
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:3097
+    container_name: imgscraper-frontend
+    restart: unless-stopped
+    ports:
+      - "3098:4173"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  imagedata:
