@@ -69,77 +69,190 @@ async def get_all_products_with_image_status(
     For the gallery page: list products with their image counts.
     filter_status: 'all', 'has_images', 'no_images', 'uncurated', 'accepted', 'rejected'
     Returns: {"items": [...], "total": int}
+
+    Strategy: For image-based filters, query our own DB FIRST to get matching product_ids,
+    then fetch those products from WSK Hub. This avoids the post-pagination filter bug.
     """
-    # Get products from WSK Hub
-    count_result = await wskhub_session.execute(text("SELECT count(*) FROM products"))
-    total = count_result.scalar()
+    needs_image_filter = filter_status in ("has_images", "uncurated", "accepted", "rejected")
 
-    products_result = await wskhub_session.execute(text("""
-        SELECT p.product_id, p.name, p.manufacturer, p.ean, p.pzn, p.nan
-        FROM products p
-        ORDER BY p.name
-        LIMIT :limit OFFSET :offset
-    """), {"limit": limit, "offset": offset})
-    products = products_result.mappings().all()
+    if needs_image_filter:
+        # --- FILTER-FIRST: Query our DB for matching product_ids, then fetch from WSK Hub ---
+        status_conditions = {
+            "has_images": "",  # any image
+            "uncurated": "HAVING count(*) FILTER (WHERE status = 'pending') > 0",
+            "accepted": "HAVING count(*) FILTER (WHERE status = 'accepted') > 0",
+            "rejected": "HAVING count(*) FILTER (WHERE status = 'rejected') > 0",
+        }
+        having_clause = status_conditions[filter_status]
 
-    # Get image counts per product from own DB
-    product_ids = [str(p["product_id"]) for p in products]
-    if product_ids:
-        image_counts = await own_session.execute(text("""
-            SELECT product_id::text,
+        # Get all matching product_ids with counts from our DB
+        count_q = f"""
+            SELECT product_id::text as pid,
                    count(*) as total,
                    count(*) FILTER (WHERE status = 'pending') as pending,
                    count(*) FILTER (WHERE status = 'accepted') as accepted,
                    count(*) FILTER (WHERE status = 'rejected') as rejected
             FROM product_images
-            WHERE product_id::text = ANY(:ids)
             GROUP BY product_id
-        """), {"ids": product_ids})
-        counts = {str(r["product_id"]): dict(r) for r in image_counts.mappings()}
+            {having_clause}
+        """
+        count_result = await own_session.execute(text(count_q))
+        all_image_counts = {r["pid"]: dict(r) for r in count_result.mappings()}
+        matching_pids = list(all_image_counts.keys())
+        total = len(matching_pids)
 
-        # Get first thumbnail per product for the gallery grid
-        thumb_result = await own_session.execute(text("""
-            SELECT DISTINCT ON (product_id) product_id::text, id
-            FROM product_images
-            WHERE product_id::text = ANY(:ids)
-            ORDER BY product_id, status ASC, id ASC
-        """), {"ids": product_ids})
-        thumbnails = {str(r["product_id"]): r["id"] for r in thumb_result.mappings()}
+        if not matching_pids:
+            return {"items": [], "total": 0}
+
+        # Fetch product details from WSK Hub for the matching IDs
+        # We need to paginate within the matching set
+        products_result = await wskhub_session.execute(text("""
+            SELECT p.product_id, p.name, p.manufacturer, p.ean, p.pzn, p.nan
+            FROM products p
+            WHERE p.product_id::text = ANY(:ids)
+            ORDER BY p.name
+            LIMIT :limit OFFSET :offset
+        """), {"ids": matching_pids, "limit": limit, "offset": offset})
+        products = products_result.mappings().all()
+
+        # Get thumbnails for these products
+        page_pids = [str(p["product_id"]) for p in products]
+        if page_pids:
+            thumb_result = await own_session.execute(text("""
+                SELECT DISTINCT ON (product_id) product_id::text, id
+                FROM product_images
+                WHERE product_id::text = ANY(:ids)
+                ORDER BY product_id, status ASC, id ASC
+            """), {"ids": page_pids})
+            thumbnails = {str(r["product_id"]): r["id"] for r in thumb_result.mappings()}
+        else:
+            thumbnails = {}
+
+        items = []
+        for p in products:
+            pid = str(p["product_id"])
+            c = all_image_counts.get(pid, {"total": 0, "pending": 0, "accepted": 0, "rejected": 0})
+            thumb_id = thumbnails.get(pid)
+            items.append({
+                "product_id": pid,
+                "name": p["name"],
+                "manufacturer": p["manufacturer"],
+                "ean": p["ean"],
+                "pzn": p["pzn"],
+                "nan": p["nan"],
+                "image_count": c.get("total", 0),
+                "pending_count": c.get("pending", 0),
+                "accepted_count": c.get("accepted", 0),
+                "rejected_count": c.get("rejected", 0),
+                "thumbnail_url": f"/api/images/{thumb_id}/thumbnail" if thumb_id else None,
+            })
+
+        return {"items": items, "total": total}
+
     else:
-        counts = {}
-        thumbnails = {}
+        # --- ALL or NO_IMAGES: Paginate from WSK Hub, then enrich with image counts ---
+        if filter_status == "no_images":
+            # Get product_ids that DO have images
+            has_img = await own_session.execute(text(
+                "SELECT DISTINCT product_id::text as pid FROM product_images"
+            ))
+            exclude_pids = [r["pid"] for r in has_img.mappings()]
 
-    items = []
-    for p in products:
-        pid = str(p["product_id"])
-        c = counts.get(pid, {"total": 0, "pending": 0, "accepted": 0, "rejected": 0})
-        thumb_id = thumbnails.get(pid)
-        item = {
-            "product_id": pid,
-            "name": p["name"],
-            "manufacturer": p["manufacturer"],
-            "ean": p["ean"],
-            "pzn": p["pzn"],
-            "nan": p["nan"],
-            "image_count": c.get("total", 0),
-            "pending_count": c.get("pending", 0),
-            "accepted_count": c.get("accepted", 0),
-            "rejected_count": c.get("rejected", 0),
-            "thumbnail_url": f"/api/images/{thumb_id}/thumbnail" if thumb_id else None,
-        }
+            if exclude_pids:
+                count_result = await wskhub_session.execute(text("""
+                    SELECT count(*) FROM products WHERE product_id::text != ALL(:ids)
+                """), {"ids": exclude_pids})
+                total = count_result.scalar()
 
-        # Apply filter
-        if filter_status == "has_images" and item["image_count"] == 0:
-            continue
-        if filter_status == "no_images" and item["image_count"] > 0:
-            continue
-        if filter_status == "uncurated" and item["pending_count"] == 0:
-            continue
-        if filter_status == "accepted" and item["accepted_count"] == 0:
-            continue
-        if filter_status == "rejected" and item["rejected_count"] == 0:
-            continue
+                products_result = await wskhub_session.execute(text("""
+                    SELECT p.product_id, p.name, p.manufacturer, p.ean, p.pzn, p.nan
+                    FROM products p
+                    WHERE p.product_id::text != ALL(:ids)
+                    ORDER BY p.name
+                    LIMIT :limit OFFSET :offset
+                """), {"ids": exclude_pids, "limit": limit, "offset": offset})
+            else:
+                count_result = await wskhub_session.execute(text("SELECT count(*) FROM products"))
+                total = count_result.scalar()
+                products_result = await wskhub_session.execute(text("""
+                    SELECT p.product_id, p.name, p.manufacturer, p.ean, p.pzn, p.nan
+                    FROM products p ORDER BY p.name LIMIT :limit OFFSET :offset
+                """), {"limit": limit, "offset": offset})
 
-        items.append(item)
+            products = products_result.mappings().all()
+            # No images for these products by definition
+            items = [{
+                "product_id": str(p["product_id"]),
+                "name": p["name"],
+                "manufacturer": p["manufacturer"],
+                "ean": p["ean"],
+                "pzn": p["pzn"],
+                "nan": p["nan"],
+                "image_count": 0,
+                "pending_count": 0,
+                "accepted_count": 0,
+                "rejected_count": 0,
+                "thumbnail_url": None,
+            } for p in products]
 
-    return {"items": items, "total": total}
+            return {"items": items, "total": total}
+
+        else:
+            # filter_status == "all" (default)
+            count_result = await wskhub_session.execute(text("SELECT count(*) FROM products"))
+            total = count_result.scalar()
+
+            products_result = await wskhub_session.execute(text("""
+                SELECT p.product_id, p.name, p.manufacturer, p.ean, p.pzn, p.nan
+                FROM products p
+                ORDER BY p.name
+                LIMIT :limit OFFSET :offset
+            """), {"limit": limit, "offset": offset})
+            products = products_result.mappings().all()
+
+            # Enrich with image counts
+            product_ids = [str(p["product_id"]) for p in products]
+            if product_ids:
+                image_counts = await own_session.execute(text("""
+                    SELECT product_id::text,
+                           count(*) as total,
+                           count(*) FILTER (WHERE status = 'pending') as pending,
+                           count(*) FILTER (WHERE status = 'accepted') as accepted,
+                           count(*) FILTER (WHERE status = 'rejected') as rejected
+                    FROM product_images
+                    WHERE product_id::text = ANY(:ids)
+                    GROUP BY product_id
+                """), {"ids": product_ids})
+                counts = {str(r["product_id"]): dict(r) for r in image_counts.mappings()}
+
+                thumb_result = await own_session.execute(text("""
+                    SELECT DISTINCT ON (product_id) product_id::text, id
+                    FROM product_images
+                    WHERE product_id::text = ANY(:ids)
+                    ORDER BY product_id, status ASC, id ASC
+                """), {"ids": product_ids})
+                thumbnails = {str(r["product_id"]): r["id"] for r in thumb_result.mappings()}
+            else:
+                counts = {}
+                thumbnails = {}
+
+            items = []
+            for p in products:
+                pid = str(p["product_id"])
+                c = counts.get(pid, {"total": 0, "pending": 0, "accepted": 0, "rejected": 0})
+                thumb_id = thumbnails.get(pid)
+                items.append({
+                    "product_id": pid,
+                    "name": p["name"],
+                    "manufacturer": p["manufacturer"],
+                    "ean": p["ean"],
+                    "pzn": p["pzn"],
+                    "nan": p["nan"],
+                    "image_count": c.get("total", 0),
+                    "pending_count": c.get("pending", 0),
+                    "accepted_count": c.get("accepted", 0),
+                    "rejected_count": c.get("rejected", 0),
+                    "thumbnail_url": f"/api/images/{thumb_id}/thumbnail" if thumb_id else None,
+                })
+
+            return {"items": items, "total": total}

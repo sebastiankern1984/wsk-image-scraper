@@ -20,17 +20,18 @@ interface ProductsResponse {
 }
 
 const FILTERS = [
-  { key: "all", label: "Alle" },
+  { key: "has_images", label: "Mit Bildern" },
   { key: "uncurated", label: "Unkuratiert" },
   { key: "accepted", label: "Akzeptiert" },
   { key: "rejected", label: "Abgelehnt" },
+  { key: "all", label: "Alle Produkte" },
   { key: "no_images", label: "Keine Bilder" },
 ] as const;
 
 type FilterKey = (typeof FILTERS)[number]["key"];
 
 export default function Gallery() {
-  const [filter, setFilter] = useState<FilterKey>("all");
+  const [filter, setFilter] = useState<FilterKey>("has_images");
   const [page, setPage] = useState(1);
   const [data, setData] = useState<ProductsResponse | null>(null);
   const [loading, setLoading] = useState(true);
