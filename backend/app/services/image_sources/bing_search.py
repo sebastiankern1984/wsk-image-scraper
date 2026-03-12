@@ -14,19 +14,21 @@ API_URL = "https://api.bing.microsoft.com/v7.0/images/search"
 class BingSearchSource(BaseImageSource):
     name = "bing"
 
-    def __init__(self) -> None:
-        self._monthly_count: int = 0
-        self._monthly_reset_date: date = date.today().replace(day=1)
+    # Class-level counters so they persist across instances
+    _monthly_count: int = 0
+    _monthly_limit: int = settings.BING_MONTHLY_LIMIT
+    _monthly_reset_date: date = date.today().replace(day=1)
 
     def is_configured(self) -> bool:
         return bool(settings.BING_API_KEY)
 
-    def _check_and_reset_monthly(self) -> None:
+    @classmethod
+    def _check_and_reset_monthly(cls) -> None:
         today = date.today()
         first_of_month = today.replace(day=1)
-        if first_of_month != self._monthly_reset_date:
-            self._monthly_count = 0
-            self._monthly_reset_date = first_of_month
+        if first_of_month != cls._monthly_reset_date:
+            cls._monthly_count = 0
+            cls._monthly_reset_date = first_of_month
 
     async def search(
         self,
@@ -38,9 +40,9 @@ class BingSearchSource(BaseImageSource):
         if not self.is_configured():
             return []
 
-        self._check_and_reset_monthly()
+        BingSearchSource._check_and_reset_monthly()
 
-        if self._monthly_count >= settings.BING_MONTHLY_LIMIT:
+        if BingSearchSource._monthly_count >= settings.BING_MONTHLY_LIMIT:
             logger.info(
                 f"Bing monthly limit reached ({settings.BING_MONTHLY_LIMIT}). "
                 f"Skipping search."
@@ -74,7 +76,7 @@ class BingSearchSource(BaseImageSource):
             logger.warning(f"Bing image search failed for '{query}': {e}")
             return []
 
-        self._monthly_count += 1
+        BingSearchSource._monthly_count += 1
 
         values = data.get("value", [])
         results: list[ImageResult] = []

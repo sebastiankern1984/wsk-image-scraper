@@ -14,18 +14,20 @@ API_URL = "https://customsearch.googleapis.com/customsearch/v1"
 class GoogleSearchSource(BaseImageSource):
     name = "google"
 
-    def __init__(self) -> None:
-        self._daily_count: int = 0
-        self._daily_reset_date: date = date.today()
+    # Class-level counters so they persist across instances
+    _daily_count: int = 0
+    _daily_limit: int = settings.GOOGLE_DAILY_LIMIT
+    _daily_reset_date: date = date.today()
 
     def is_configured(self) -> bool:
         return bool(settings.GOOGLE_API_KEY) and bool(settings.GOOGLE_CX)
 
-    def _check_and_reset_daily(self) -> None:
+    @classmethod
+    def _check_and_reset_daily(cls) -> None:
         today = date.today()
-        if today != self._daily_reset_date:
-            self._daily_count = 0
-            self._daily_reset_date = today
+        if today != cls._daily_reset_date:
+            cls._daily_count = 0
+            cls._daily_reset_date = today
 
     async def search(
         self,
@@ -37,9 +39,9 @@ class GoogleSearchSource(BaseImageSource):
         if not self.is_configured():
             return []
 
-        self._check_and_reset_daily()
+        GoogleSearchSource._check_and_reset_daily()
 
-        if self._daily_count >= settings.GOOGLE_DAILY_LIMIT:
+        if GoogleSearchSource._daily_count >= settings.GOOGLE_DAILY_LIMIT:
             logger.info(
                 f"Google daily limit reached ({settings.GOOGLE_DAILY_LIMIT}). "
                 f"Skipping search."
@@ -73,7 +75,7 @@ class GoogleSearchSource(BaseImageSource):
             logger.warning(f"Google image search failed for '{query}': {e}")
             return []
 
-        self._daily_count += 1
+        GoogleSearchSource._daily_count += 1
 
         items = data.get("items", [])
         results: list[ImageResult] = []
