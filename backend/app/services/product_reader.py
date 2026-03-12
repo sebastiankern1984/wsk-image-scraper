@@ -14,14 +14,15 @@ async def get_products_without_images(
     Query WSK Hub products + product_eans.
     Cross-reference with own product_images to find products without accepted images.
     """
-    # Get all products from WSK Hub with their primary EAN
+    # Get all products from WSK Hub with their primary EAN (DISTINCT ON to avoid duplicates)
     q = text("""
-        SELECT p.product_id, p.name, p.manufacturer, p.ean, p.pzn, p.nan,
+        SELECT DISTINCT ON (p.product_id)
+               p.product_id, p.name, p.manufacturer, p.ean, p.pzn, p.nan,
                pe.ean_value as primary_ean
         FROM products p
         LEFT JOIN product_eans pe ON pe.product_id = p.id
             AND pe.is_primary = true AND pe.valid_to IS NULL
-        ORDER BY p.id
+        ORDER BY p.product_id, pe.ean_value
     """)
     result = await wskhub_session.execute(q)
     products = result.mappings().all()

@@ -22,7 +22,16 @@ async def list_products(
     result = await get_all_products_with_image_status(
         wskhub_db, db, offset=offset, limit=per_page, filter_status=filter
     )
-    return {"items": result["items"], "total": result["total"], "page": page, "per_page": per_page}
+    import math
+    total = result["total"]
+    total_pages = max(1, math.ceil(total / per_page))
+    return {
+        "products": result["items"],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+    }
 
 
 @router.get("/{product_id}/images")
