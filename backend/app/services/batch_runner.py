@@ -70,6 +70,10 @@ async def _run_batch(batch_id: int):
             images_for_product = 0
 
             for source in sources:
+                # Skip remaining sources if we already have images from a better source
+                if images_for_product > 0:
+                    break
+
                 if not source.is_configured():
                     continue
                 try:

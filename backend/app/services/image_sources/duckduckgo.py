@@ -1,18 +1,32 @@
 import asyncio
 import logging
+import time
 
 from duckduckgo_search import DDGS
+from duckduckgo_search.exceptions import DuckDuckGoSearchException
 
 from app.services.image_sources.base import BaseImageSource, ImageResult
 
 logger = logging.getLogger(__name__)
+
+# Class-level rate limit tracking
+_last_request_time: float = 0.0
+_consecutive_failures: int = 0
+_cooldown_until: float = 0.0
+MIN_DELAY = 4.0  # Minimum seconds between requests
+MAX_CONSECUTIVE_FAILURES = 3  # After this many failures, enter cooldown
+COOLDOWN_DURATION = 120.0  # 2 minutes cooldown after repeated failures
 
 
 class DuckDuckGoSource(BaseImageSource):
     name = "duckduckgo"
 
     def is_configured(self) -> bool:
-        return True  # No API key needed
+        global _cooldown_until
+        # Not "configured" during cooldown — batch runner will skip us
+        if time.time() < _cooldown_until:
+            return False
+        return True
 
     async def search(
         self,
@@ -21,35 +35,47 @@ class DuckDuckGoSource(BaseImageSource):
         name: str | None,
         manufacturer: str | None,
     ) -> list[ImageResult]:
-        # Build query from available info
+        global _last_request_time, _consecutive_failures, _cooldown_until
+
+        # Build query: name + manufacturer only (EAN rarely helps for image search)
         parts = []
         if name:
             parts.append(name)
         if manufacturer:
             parts.append(manufacturer)
-        if ean:
-            parts.append(ean)
-        elif pzn:
-            parts.append(f"PZN {pzn}")
 
         if not parts:
             return []
 
-        query = " ".join(parts) + " Produktbild"
+        query = " ".join(parts)
+
+        # Rate limit: wait at least MIN_DELAY since last request
+        now = time.time()
+        elapsed = now - _last_request_time
+        if elapsed < MIN_DELAY:
+            await asyncio.sleep(MIN_DELAY - elapsed)
+
+        _last_request_time = time.time()
 
         try:
-            # Run sync DDG search in thread pool to not block async loop
             loop = asyncio.get_event_loop()
             images = await loop.run_in_executor(
                 None,
                 lambda: _ddg_image_search(query),
             )
+            # Success — reset failure counter
+            _consecutive_failures = 0
         except Exception as e:
-            logger.warning(f"DuckDuckGo search failed for '{query}': {e}")
+            _consecutive_failures += 1
+            if _consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                _cooldown_until = time.time() + COOLDOWN_DURATION
+                logger.warning(
+                    f"DuckDuckGo: {_consecutive_failures} consecutive failures, "
+                    f"entering {COOLDOWN_DURATION}s cooldown. Last error: {e}"
+                )
+            else:
+                logger.warning(f"DuckDuckGo search failed for '{query}': {e}")
             return []
-
-        # Rate limit - be polite
-        await asyncio.sleep(1.0)
 
         results: list[ImageResult] = []
         for img in images[:5]:
@@ -76,7 +102,5 @@ def _ddg_image_search(query: str) -> list[dict]:
             keywords=query,
             region="de-de",
             safesearch="moderate",
-            size="Large",
-            type_image="photo",
             max_results=5,
         ))
