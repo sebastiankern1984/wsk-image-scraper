@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.database import async_session, wskhub_async_session
 from app.models.image_batch import ImageBatch
@@ -48,6 +48,20 @@ async def cancel_batch(batch_id: int):
     _cancel_requested = True
 
 
+async def _check_image_exists(product_id: str, source_url: str) -> bool:
+    """Check if this exact image already exists in our DB."""
+    async with async_session() as db:
+        result = await db.execute(
+            text("""
+                SELECT 1 FROM product_images
+                WHERE product_id = :pid AND source_url = :url
+                LIMIT 1
+            """),
+            {"pid": product_id, "url": source_url},
+        )
+        return result.first() is not None
+
+
 async def _run_batch(batch_id: int):
     global _current_batch_id, _cancel_requested
     sources = [OpenFoodFactsSource(), DuckDuckGoSource(), GoogleSearchSource(), BingSearchSource()]
@@ -84,6 +98,12 @@ async def _run_batch(batch_id: int):
                         manufacturer=product["manufacturer"],
                     )
                     for i, img_result in enumerate(results):
+                        # Skip if this image already exists (from a previous batch)
+                        if await _check_image_exists(
+                            product["product_id"], img_result.image_url
+                        ):
+                            continue
+
                         downloaded = await download_and_store_image(
                             product_id=product["product_id"],
                             image_url=img_result.image_url,
