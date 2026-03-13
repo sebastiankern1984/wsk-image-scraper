@@ -9,6 +9,7 @@ from app.models.image_batch import ImageBatch
 from app.models.product_image import ProductImage
 from app.services.product_reader import get_products_without_images
 from app.services.image_sources.openfoodfacts import OpenFoodFactsSource
+from app.services.image_sources.duckduckgo import DuckDuckGoSource
 from app.services.image_sources.google_search import GoogleSearchSource
 from app.services.image_sources.bing_search import BingSearchSource
 from app.services.image_downloader import download_and_store_image
@@ -49,7 +50,7 @@ async def cancel_batch(batch_id: int):
 
 async def _run_batch(batch_id: int):
     global _current_batch_id, _cancel_requested
-    sources = [OpenFoodFactsSource(), GoogleSearchSource(), BingSearchSource()]
+    sources = [OpenFoodFactsSource(), DuckDuckGoSource(), GoogleSearchSource(), BingSearchSource()]
 
     try:
         # Get products to process
